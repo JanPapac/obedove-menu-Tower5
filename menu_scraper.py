@@ -260,7 +260,19 @@ def format_blue_champs(text: str) -> str:
     # Zredukujeme medzery a vyčistíme
     text = re.sub(r'  +', ' ', text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    return "\n".join(lines)
+
+    # Prilepíme osamelé číslice "1:", "2:" atď. k nasledujúcemu riadku
+    merged = []
+    i = 0
+    while i < len(lines):
+        if re.match(r'^\d+:\s*$', lines[i]) and i + 1 < len(lines):
+            merged.append(lines[i].strip() + ' ' + lines[i + 1].strip())
+            i += 2
+        else:
+            merged.append(lines[i])
+            i += 1
+
+    return "\n".join(merged)
 
 
 def format_hotel_set(text: str) -> str:
