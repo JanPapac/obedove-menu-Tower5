@@ -219,6 +219,66 @@ def clean(text: str) -> str:
     return "\n".join(lines)
 
 
+def format_tower_events(text: str) -> str:
+    """Formátovanie pre Tower Events – rozdelí sekcie a položky."""
+    # Rozdelíme pred sekčnými nadpismi
+    text = re.sub(r'(?<!\n)(Polievka)\b', r'\n\1', text)
+    text = re.sub(r'(?<!\n)(Hlavné jedlo)\b', r'\n\1', text)
+    text = re.sub(r'(?<!\n)(Prílohy)\b', r'\n\1', text)
+
+    # Rozdelíme pred položkami A: B: C: D: E: (ale len keď sú na začiatku
+    # alebo po cene/medzere, nie uprostred slova)
+    text = re.sub(r'(€[^\n]*?)\s*\b([A-E]:)', r'\1\n\2', text)
+    # Ak sú na jednom riadku: "porcia/1,50€B: Kombi" → nový riadok
+    text = re.sub(r'(€)\s*([A-E]:)', r'\1\n\2', text)
+
+    # V A la Carte: rozdelíme pred 1. 2. 3. atď. (zlepené s €)
+    text = re.sub(r'(€)\s+(\d+\.\s)', r'\1\n\2', text)
+
+    # Zredukujeme medzery a vyčistíme
+    text = re.sub(r'  +', ' ', text)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n".join(lines)
+
+
+def format_blue_champs(text: str) -> str:
+    """Formátovanie pre Blue Champs – rozdelí polievky, fit menu a položky."""
+    # Rozdelíme pred "Fit menu:" / "FIT MENU" / "Fit Menu"
+    text = re.sub(r'(?<!\n)([Ff]it\s*[Mm]enu)', r'\n\1', text)
+
+    # Rozdelíme pred objemom polievky zlepeným s predchádzajúcim textom
+    # napr. "...parmezán (1,3,4,7)0,33l Šampiňónový" → nový riadok pred 0,33l
+    text = re.sub(r'(\))\s*(0,\d+l\s)', r'\1\n\2', text)
+    text = re.sub(r'(€)\s*(0,\d+l\s)', r'\1\n\2', text)
+
+    # Rozdelíme pred číslovanými položkami 1: 2: 3: 4: 5:
+    text = re.sub(r'(?<!\n)(?<=\))\s*(\d+:\s)', r'\n\1', text)
+    text = re.sub(r'(?<!\n)(?<=€)\s*(\d+:\s)', r'\n\1', text)
+    # Aj keď sú na začiatku po texte bez €/)
+    text = re.sub(r'([^\n])\s+(\d+:\s+\d+g)', r'\1\n\2', text)
+
+    # Zredukujeme medzery a vyčistíme
+    text = re.sub(r'  +', ' ', text)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n".join(lines)
+
+
+def format_hotel_set(text: str) -> str:
+    """Formátovanie pre Hotel Set – odstráni alergény, rozdelí položky."""
+    # Rozdelíme zlepené položky pred č.) (1.) 2.) atď.)
+    text = re.sub(r'(€\s*(?:\d[\d,]*)?)\s*(\d+\.\))', r'\1\n\2', text)
+    # Odstránime alergény nalepené na konci ceny: 8,20€1,3,7,8,9
+    text = re.sub(r'([\d,.]+€)\s*(\d[\d,]+)\s*$', r'\1', text, flags=re.MULTILINE)
+    # Odstránime samostatné riadky s alergénmi (len čísla a čiarky)
+    text = re.sub(r'^\s*\d+([,]\d+)+\s*$', '', text, flags=re.MULTILINE)
+    # Odstránime alergény na konci riadku (čísla oddelené čiarkami po jednom medzere)
+    text = re.sub(r'\s+(\d,)+\d\s*$', '', text, flags=re.MULTILINE)
+    # Zredukujeme medzery
+    text = re.sub(r'  +', ' ', text)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n".join(lines)
+
+
 # ===========================================================================
 # 1) TOWER EVENTS (Cantína)
 # ===========================================================================
@@ -331,7 +391,7 @@ def scrape_tower_events() -> Optional[str]:
                     break
             break
 
-    return "\n".join(lines)
+    return format_tower_events("\n".join(lines))
 
 
 # ===========================================================================
@@ -411,7 +471,7 @@ def scrape_blue_champs() -> Optional[str]:
         result += weekly_section.strip() + "\n\n"
     result += today_section.strip()
 
-    return clean(result)
+    return format_blue_champs(clean(result))
 
 
 # ===========================================================================
@@ -508,7 +568,7 @@ def scrape_hotel_set() -> Optional[str]:
         log.warning("Hotel Set – dnešný deň sa nenašiel v PDF")
         return None
 
-    return "\n".join(captured)
+    return format_hotel_set("\n".join(captured))
 
 
 # ===========================================================================
