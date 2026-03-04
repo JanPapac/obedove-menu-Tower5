@@ -201,7 +201,19 @@ def today_date_str() -> str:
 
 
 def clean(text: str) -> str:
-    """Vyčistí text – odstráni nadbytočné medzery a prázdne riadky."""
+    """Vyčistí text – rozdelí zlepené položky, odstráni nadbytočné medzery."""
+    # 1) Vložíme nový riadok pred číslované položky (1.), 2.), A), B) atď.)
+    #    ktoré sú zlepené s predchádzajúcou cenou
+    text = re.sub(r'(€\s*(?:\d[\d,]*)?)\s*(\d+\.\))', r'\1\n\2', text)
+    text = re.sub(r'(€\s*(?:\d[\d,]*)?)\s*([A-E]\))', r'\1\n\2', text)
+
+    # 2) Odstránime zlepené alergény na konci ceny (8,20€1,3,7,8,9 → 8,20€)
+    text = re.sub(r'([\d,]+€)\s*(\d[\d,]+)\s*$', r'\1', text, flags=re.MULTILINE)
+
+    # 3) Zredukujeme viacnásobné medzery na jednu
+    text = re.sub(r'  +', ' ', text)
+
+    # 4) Vyčistíme riadky
     lines = [line.strip() for line in text.splitlines()]
     lines = [l for l in lines if l]
     return "\n".join(lines)
