@@ -147,9 +147,9 @@ def scrape_tower_events() -> Optional[str]:
 
 def scrape_blue_champs() -> Optional[str]:
     """
-    Stránka má nadpisy <h2> pre každý deň (napr. 'Pondelok 2.3.2026')
-    a pod nimi <p> tagy s jedlami.
-    Taktiež je tam 'ponuka týždňa' s polievkou a fit menu.
+    Stránka má nadpisy pre každý deň (napr. 'Pondelok 2.3.2026').
+    Používame textový prístup — extrahujeme celý text stránky
+    a rozdelíme ho podľa názvov dní.
     """
     url = "https://www.thebluechamps.sk/denne-menu/"
     log.info("Scrapujem The Blue Champs: %s", url)
@@ -163,32 +163,51 @@ def scrape_blue_champs() -> Optional[str]:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Nájdeme týždennú polievku/fit menu (sekcia "ponuka týždňa")
+    # Extrahujeme celý text stránky
+    full_text = soup.get_text("\n", strip=True)
+    lines = full_text.splitlines()
+
+    # Nájdeme týždennú ponuku (polievka + fit menu)
     weekly_section = ""
-    headings = soup.find_all("h2")
-    for h in headings:
-        if "ponuka" in h.get_text(strip=True).lower() and "týždň" in h.get_text(strip=True).lower():
-            # Zoberieme nasledujúce <p> elementy
-            sibling = h.find_next_sibling()
-            while sibling and sibling.name not in ["h2", "h1"]:
-                txt = sibling.get_text("\n", strip=True)
-                if txt:
-                    weekly_section += txt + "\n"
-                sibling = sibling.find_next_sibling()
+    all_day_names = ["pondelok", "utorok", "streda", "štvrtok", "stvrtok", "piatok"]
+
+    for i, line in enumerate(lines):
+        if "ponuka" in line.lower() and "týžd" in line.lower():
+            # Zoberieme riadky až po prvý deň
+            weekly_lines = []
+            for j in range(i + 1, len(lines)):
+                if any(d in lines[j].lower() for d in all_day_names):
+                    break
+                if lines[j].strip():
+                    weekly_lines.append(lines[j].strip())
+            weekly_section = "\n".join(weekly_lines)
             break
 
     # Nájdeme dnešný deň
     today_section = ""
-    for h in headings:
-        h_text = h.get_text(strip=True)
-        if today_matches(h_text):
-            sibling = h.find_next_sibling()
-            while sibling and sibling.name not in ["h2", "h1"]:
-                txt = sibling.get_text("\n", strip=True)
-                if txt:
-                    today_section += txt + "\n"
-                sibling = sibling.find_next_sibling()
-            break
+    today_names = SK_DAYS.get(TODAY_INDEX, [])
+
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if any(d in line_lower for d in today_names):
+            # Overíme, že to vyzerá ako nadpis dňa (obsahuje dátum alebo je krátky)
+            if re.search(r'\d+\.\d+\.\d{4}', line) or len(line) < 40:
+                # Zoberieme riadky až po ďalší deň
+                day_lines = []
+                for j in range(i + 1, len(lines)):
+                    next_lower = lines[j].lower()
+                    # Stop ak nájdeme ďalší deň
+                    is_next_day = any(
+                        d in next_lower
+                        for d in all_day_names
+                        if d not in today_names
+                    )
+                    if is_next_day and re.search(r'\d+\.\d+\.\d{4}', lines[j]):
+                        break
+                    if lines[j].strip():
+                        day_lines.append(lines[j].strip())
+                today_section = "\n".join(day_lines)
+                break
 
     if not today_section:
         log.warning("Blue Champs – dnešný deň sa nenašiel")
