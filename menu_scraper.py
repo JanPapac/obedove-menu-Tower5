@@ -138,6 +138,52 @@ def scrape_tower_events() -> Optional[str]:
     if not lines:
         return None
 
+    # Hľadáme A la Carte MENU pre dnešný deň
+    for row in rows:
+        text = row.get_text(" ", strip=True)
+        if "a la carte" in text.lower():
+            # Nájdeme bunku s celým A la Carte textom
+            cells = row.find_all(["td", "th"])
+            for cell in cells:
+                cell_text = cell.get_text(" ", strip=True)
+                if len(cell_text) > 50 and "a la carte" not in cell_text.lower():
+                    # Toto je bunka s jedlami pre všetky dni
+                    # Rozdelíme podľa názvov dní
+                    day_names_sk = {
+                        0: "pondelok", 1: "utorok", 2: "streda",
+                        3: "štvrtok", 4: "piatok",
+                    }
+                    today_name = day_names_sk.get(TODAY_INDEX, "")
+                    if not today_name:
+                        break
+
+                    # Nájdeme dnešnú sekciu v texte
+                    text_lower = cell_text.lower()
+                    start = text_lower.find(today_name)
+                    if start == -1:
+                        break
+
+                    # Posunieme sa za názov dňa a dvojbodku
+                    start_content = cell_text.find(":", start) + 1
+                    if start_content == 0:
+                        break
+
+                    # Nájdeme koniec (ďalší deň)
+                    end = len(cell_text)
+                    for d_name in day_names_sk.values():
+                        if d_name == today_name:
+                            continue
+                        pos = text_lower.find(d_name, start_content)
+                        if pos != -1 and pos < end:
+                            end = pos
+
+                    alacarte_text = cell_text[start_content:end].strip()
+                    if alacarte_text:
+                        lines.append("\n🍽️ *A la Carte:*")
+                        lines.append(alacarte_text)
+                    break
+            break
+
     return "\n".join(lines)
 
 
