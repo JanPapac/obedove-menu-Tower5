@@ -1,0 +1,29 @@
+name: Obedové menu do Slacku
+
+on:
+  schedule:
+    # 10:00 UTC = 11:00 CET (zimný čas)
+    # Po prechode na letný čas to bude chodiť o 12:00
+    # Ak chceš aj v lete o 11:00, pridaj druhý riadok: - cron: '0 9 * * 1-5'
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:  # tlačidlo na manuálne spustenie
+
+jobs:
+  send-menu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kódu
+        uses: actions/checkout@v4
+
+      - name: Inštalácia Pythonu
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Inštalácia závislostí
+        run: pip install -r requirements.txt
+
+      - name: Spustenie scrapera
+        run: python menu_scraper.py
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
