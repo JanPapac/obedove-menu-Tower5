@@ -32,6 +32,141 @@ from bs4 import BeautifulSoup
 # ---------------------------------------------------------------------------
 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+CALORIENINJAS_API_KEY = os.environ.get("CALORIENINJAS_API_KEY", "")
+
+# Slovensko-anglický slovník jedál pre CalorieNinjas
+SK_TO_EN_FOOD = {
+    # Mäso
+    "bravčov": "pork", "bravčová": "pork", "bravčové": "pork", "bravčový": "pork",
+    "kuraci": "chicken", "kuracie": "chicken", "kurací": "chicken", "kurča": "chicken",
+    "hovädz": "beef", "hovädzia": "beef", "hovädzie": "beef", "hovädší": "beef",
+    "morčac": "turkey", "morčacia": "turkey", "morčacie": "turkey", "morčací": "turkey",
+    "teľac": "veal", "telacie": "veal",
+    "divinov": "venison", "divinový": "venison",
+    "kačac": "duck", "kačacie": "duck",
+    "losos": "salmon", "treska": "cod",
+    "krevet": "shrimp", "krevety": "shrimp",
+    "sekaná": "meatloaf",
+    "rezeň": "schnitzel", "rezne": "schnitzel",
+    "guláš": "goulash", "tokáň": "stew",
+    "roštenk": "sirloin steak", "panenk": "tenderloin",
+    "pečeň": "liver", "pliecko": "shoulder",
+    "pulled pork": "pulled pork",
+    # Prílohy
+    "ryža": "rice", "ryžou": "rice", "ryži": "rice",
+    "zemiaky": "potatoes", "zemiak": "potato", "zemiakov": "potato",
+    "hranolk": "french fries", "hranolky": "french fries",
+    "knedľ": "dumpling", "knedľa": "dumpling",
+    "kaša": "mashed potatoes",
+    "tarhoňa": "egg barley pasta",
+    "špagety": "spaghetti", "rezance": "noodles",
+    "gnocchi": "gnocchi", "rizoto": "risotto",
+    # Polievky
+    "polievka": "soup", "vývar": "broth", "krém": "cream soup",
+    "boršč": "borscht", "minestrone": "minestrone",
+    "gulášová": "goulash soup",
+    # Zelenina
+    "kapusta": "cabbage", "karfiol": "cauliflower",
+    "špenát": "spinach", "hrášok": "peas", "hrášku": "peas",
+    "fazuľ": "beans", "šošovic": "lentil",
+    "cvikla": "beetroot", "mrkv": "carrot", "zelen": "vegetable",
+    "šampión": "mushroom", "hubov": "mushroom", "hlivov": "oyster mushroom",
+    # Jedlá
+    "pizza": "pizza", "burger": "burger", "cheeseburger": "cheeseburger",
+    "wrap": "wrap", "šalát": "salad", "caesar": "caesar salad",
+    "vyprážan": "fried breaded", "grilovan": "grilled", "pečen": "roasted",
+    "parené buchty": "steamed dumplings with jam",
+    "buchty": "steamed sweet dumplings",
+    "camembert": "fried camembert cheese",
+    "oštiepok": "fried smoked cheese",
+    "vyprážaný syr": "fried cheese",
+    # Omáčky a prísady
+    "tatársk": "tartar sauce", "omáčk": "sauce",
+    "parmezán": "parmesan", "mozzarell": "mozzarella",
+    "cheddar": "cheddar",
+}
+
+
+def translate_dish_to_english(dish_name: str) -> str:
+    """Preloží slovenský názov jedla do angličtiny pre CalorieNinjas."""
+    result_parts = []
+    dish_lower = dish_name.lower()
+
+    # Najprv skúsime dlhšie frázy
+    for sk, en in sorted(SK_TO_EN_FOOD.items(), key=lambda x: -len(x[0])):
+        if sk in dish_lower:
+            if en not in result_parts:
+                result_parts.append(en)
+
+    if result_parts:
+        return ", ".join(result_parts[:4])  # Max 4 zložky
+
+    # Ak nič nenájdeme, vrátime originál
+    return dish_name
+
+
+def get_calories(dish_name: str) -> Optional[int]:
+    """Získa odhad kalórií z CalorieNinjas API."""
+    if not CALORIENINJAS_API_KEY:
+        return None
+
+    english_name = translate_dish_to_english(dish_name)
+    log.debug("Kalórie pre: %s → %s", dish_name, english_name)
+
+    try:
+        resp = requests.get(
+            "https://api.calorieninjas.com/v1/nutrition",
+            params={"query": english_name},
+            headers={"X-Api-Key": CALORIENINJAS_API_KEY},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("items", [])
+            if items:
+                total_cal = sum(item.get("calories", 0) for item in items)
+                return round(total_cal) if total_cal > 0 else None
+    except requests.RequestException:
+        pass
+
+    return None
+
+
+def add_calories_to_menu(menu_text: str) -> str:
+    """Pridá odhad kalórií k hlavným jedlám v menu."""
+    if not CALORIENINJAS_API_KEY or not menu_text:
+        return menu_text
+
+    lines = menu_text.splitlines()
+    result = []
+
+    for line in lines:
+        # Identifikujeme riadky s hlavnými jedlami (obsahujú A:, B:, C:, D:, E: alebo 1:, 2:, 3:, 4:)
+        is_dish = bool(re.match(r'.*[A-E1-4][.:)\]]', line))
+        # Preskočíme polievky, prílohy, šaláty z bufetu
+        is_soup = "polievk" in line.lower() or "vývar" in line.lower()
+        is_side = "príloh" in line.lower()
+
+        if is_dish and not is_soup and not is_side:
+            # Extrahujeme názov jedla (odstránime cenu, gramáž, alergény)
+            dish_name = re.sub(r'\d+g[/]?\d*[g€]*', '', line)  # gramáž
+            dish_name = re.sub(r'\d+[,.]?\d*€', '', dish_name)  # cena
+            dish_name = re.sub(r'\d+[,]\d+€', '', dish_name)
+            dish_name = re.sub(r'\(\d[\d,]*\)', '', dish_name)  # alergény v zátvorkách
+            dish_name = re.sub(r'\s+\d[,\d]*\s*$', '', dish_name)  # alergény na konci
+            dish_name = re.sub(r'[A-E][.:)\]]\s*', '', dish_name, count=1)
+            dish_name = re.sub(r'[1-4][.:)\]]\s*', '', dish_name, count=1)
+            dish_name = dish_name.strip().strip('*').strip()
+
+            if len(dish_name) > 5:
+                cal = get_calories(dish_name)
+                if cal and cal > 50:
+                    line = f"{line}  (~{cal} kcal)"
+
+        result.append(line)
+
+    return "\n".join(result)
+
 
 # Mapovanie slovenských názvov dní (bez diakritiky aj s ňou)
 SK_DAYS = {
@@ -365,6 +500,151 @@ def scrape_hotel_set() -> Optional[str]:
 
 
 # ===========================================================================
+# 4) BRICK PUB (JPG obrázok na webe)
+# ===========================================================================
+
+def scrape_brick_pub() -> Optional[str]:
+    """
+    Brick Pub zverejňuje denné menu ako JPG obrázok na hlavnej stránke.
+    Nájdeme URL obrázka a vrátime ho – v Slacku sa zobrazí ako odkaz.
+    """
+    url = "https://brickpub.sk/"
+    log.info("Scrapujem Brick Pub: %s", url)
+
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error("Brick Pub – chyba pri sťahovaní: %s", e)
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Hľadáme obrázok denného menu v WordPress uploads
+    # Typický pattern: /wp-content/uploads/2026/03/Denné-menu-*.jpg
+    menu_img_url = None
+    for img in soup.find_all("img", src=True):
+        src = img["src"]
+        if "wp-content/uploads" in src and ("enn" in src.lower() or "menu" in src.lower()):
+            # "enn" zachytí "Denné" aj "denn" (URL-encoded alebo nie)
+            if src.endswith((".jpg", ".jpeg", ".png")):
+                menu_img_url = src
+                break
+
+    # Skúsime aj <a> linky na obrázky
+    if not menu_img_url:
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"]
+            if "wp-content/uploads" in href and ("enn" in href.lower() or "menu" in href.lower()):
+                if href.endswith((".jpg", ".jpeg", ".png")):
+                    menu_img_url = href
+                    break
+
+    if not menu_img_url:
+        log.warning("Brick Pub – nenašiel sa obrázok denného menu")
+        return None
+
+    log.info("Brick Pub – obrázok menu: %s", menu_img_url)
+    return f"📷 <{menu_img_url}|Zobraziť menu (obrázok)>"
+
+
+# ===========================================================================
+# 5) STAGE RESTAURANT NTC (menucka.sk)
+# ===========================================================================
+
+def scrape_stage_ntc() -> Optional[str]:
+    """
+    Stage Restaurant NTC – menu scrapujeme z menucka.sk.
+    Stránka obsahuje týždňové menu rozdelené po dňoch.
+    """
+    url = "https://menucka.sk/denne-menu/bratislava/restauracia-stage-ntc-n-e-w-catering"
+    log.info("Scrapujem Stage NTC: %s", url)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "sk,cs;q=0.9,en;q=0.8",
+    }
+
+    try:
+        resp = requests.get(url, timeout=15, headers=headers)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error("Stage NTC – chyba pri sťahovaní: %s", e)
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    page_text = soup.get_text(separator="\n")
+    lines = [l.strip() for l in page_text.splitlines() if l.strip()]
+
+    if TODAY_INDEX > 4:
+        return None
+
+    today_day_names = SK_DAYS.get(TODAY_INDEX, [])
+    day_names_sk_full = {
+        0: "Pondelok", 1: "Utorok", 2: "Streda",
+        3: "Štvrtok", 4: "Piatok",
+    }
+    today_full = day_names_sk_full.get(TODAY_INDEX, "")
+
+    # Nájdeme sekciu pre dnešný deň
+    # Menucka.sk formát: "Pondelok (03.03.2026)" alebo "Streda (04.03.2026)"
+    capturing = False
+    captured = []
+    today_d = date.today()
+    today_date_patterns = [
+        f"{today_d.day}.{today_d.month}.{today_d.year}",
+        f"{today_d.day:02d}.{today_d.month:02d}.{today_d.year}",
+        f"({today_d.day}.{today_d.month:02d}.{today_d.year})",
+    ]
+
+    all_day_names = []
+    for v in SK_DAYS.values():
+        all_day_names.extend(v)
+    all_day_names_full = list(day_names_sk_full.values())
+
+    for line in lines:
+        line_lower = line.lower()
+
+        # Začíname zachytávať pri dnešnom dni
+        if not capturing:
+            # Hľadáme riadok s dnešným dňom a dátumom
+            if today_full.lower() in line_lower or any(dp in line for dp in today_date_patterns):
+                if any(d in line_lower for d in today_day_names) or any(dp in line for dp in today_date_patterns):
+                    capturing = True
+                    continue
+
+        # Skončíme pri ďalšom dni
+        if capturing:
+            is_next_day = False
+            for day_name in all_day_names_full:
+                if day_name.lower() in line_lower and day_name.lower() != today_full.lower():
+                    # Overíme, že to nie je len slovo v jedle
+                    if line_lower.startswith(day_name.lower()) or f"({day_name.lower()}" in line_lower:
+                        is_next_day = True
+                        break
+            if is_next_day:
+                break
+
+            # Preskočíme irelevantné riadky
+            skip_keywords = ["nenašli ste", "registrov", "zaregistrov", "menucka",
+                             "jedálny lístok", "jedálne lístky", "parametre",
+                             "reklam", "cookie", "appstore", "google play"]
+            if any(kw in line_lower for kw in skip_keywords):
+                continue
+
+            if len(line) > 2:
+                captured.append(line)
+
+    if not captured:
+        log.warning("Stage NTC – dnešné menu sa nenašlo")
+        return None
+
+    return clean("\n".join(captured))
+
+
+# ===========================================================================
 # Slack odoslanie
 # ===========================================================================
 
@@ -390,12 +670,16 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
         "Tower Events (Cantína)": "🏢",
         "The Blue Champs": "🔵",
         "Hotel Set": "🏨",
+        "Brick Pub": "🧱",
+        "Stage (NTC)": "🎾",
     }
 
     restaurant_urls = {
         "Tower Events (Cantína)": "https://towerevents.sk/menu/",
         "The Blue Champs": "https://www.thebluechamps.sk/denne-menu/",
         "Hotel Set": "https://www.hotelset.sk/domov/restauracia/",
+        "Brick Pub": "https://brickpub.sk/",
+        "Stage (NTC)": "https://restauraciastage.sk/",
     }
 
     for name, menu_text in menus.items():
@@ -479,7 +763,18 @@ def main():
         "Tower Events (Cantína)": scrape_tower_events(),
         "The Blue Champs": scrape_blue_champs(),
         "Hotel Set": scrape_hotel_set(),
+        "Brick Pub": scrape_brick_pub(),
+        "Stage (NTC)": scrape_stage_ntc(),
     }
+
+    # Pridáme odhad kalórií (preskočíme Brick Pub – je to len obrázok)
+    if CALORIENINJAS_API_KEY:
+        log.info("Pridávam odhad kalórií (CalorieNinjas)...")
+        for name in menus:
+            if menus[name] and name != "Brick Pub":
+                menus[name] = add_calories_to_menu(menus[name])
+    else:
+        log.info("CALORIENINJAS_API_KEY nie je nastavená – kalórie sa nebudú pridávať")
 
     # Výpis do konzoly (pre debug)
     for name, text in menus.items():
