@@ -264,7 +264,7 @@ def format_blue_champs(text: str) -> str:
 
 
 def format_hotel_set(text: str) -> str:
-    """Formátovanie pre Hotel Set – odstráni alergény, rozdelí položky."""
+    """Formátovanie pre Hotel Set – odstráni alergény, rozdelí položky, zlúči ceny."""
     # Rozdelíme zlepené položky pred č.) (1.) 2.) atď.)
     text = re.sub(r'(€\s*(?:\d[\d,]*)?)\s*(\d+\.\))', r'\1\n\2', text)
     # Odstránime alergény nalepené na konci ceny: 8,20€1,3,7,8,9
@@ -276,7 +276,33 @@ def format_hotel_set(text: str) -> str:
     # Zredukujeme medzery
     text = re.sub(r'  +', ' ', text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    return "\n".join(lines)
+
+    # Prilepíme osamelé ceny (riadok obsahujúci len cenu) k predchádzajúcemu riadku
+    merged = []
+    for line in lines:
+        # Cena na samostatnom riadku: "8,90€" alebo "8.90€" alebo "8,90 €"
+        if re.match(r'^\d+[,.]\d+\s*€$', line) and merged:
+            merged[-1] = merged[-1] + ' ' + line
+        else:
+            merged.append(line)
+
+    return "\n".join(merged)
+
+
+def format_stage_ntc(text: str) -> str:
+    """Formátovanie pre Stage NTC – zlúči osamelé ceny k jedlám."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    # Prilepíme osamelé ceny k predchádzajúcemu riadku
+    # Cena: "8,50 €", "11,90 €", "7,90€" alebo len "8,50€"
+    merged = []
+    for line in lines:
+        if re.match(r'^\d+[,.]\d+\s*€$', line) and merged:
+            merged[-1] = merged[-1] + ' ' + line
+        else:
+            merged.append(line)
+
+    return "\n".join(merged)
 
 
 # ===========================================================================
@@ -713,7 +739,7 @@ def scrape_stage_ntc() -> Optional[str]:
         log.warning("Stage NTC – dnešné menu sa nenašlo")
         return None
 
-    return clean("\n".join(captured))
+    return format_stage_ntc(clean("\n".join(captured)))
 
 
 # ===========================================================================
