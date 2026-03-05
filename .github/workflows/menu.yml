@@ -5,7 +5,9 @@ on:
     # 10:00 UTC = 11:00 CET (zimný čas)
     # Po prechode na letný čas to bude chodiť o 12:00
     # Ak chceš aj v lete o 11:00, pridaj druhý riadok: - cron: '0 9 * * 1-5'
-    - cron: '0 10 * * 1-5'
+ schedule:
+  - cron: '30 8 * * 1-5'
+  - cron: '30 9 * * 1-5'
   workflow_dispatch:  # tlačidlo na manuálne spustenie
 
 jobs:
