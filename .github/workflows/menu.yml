@@ -2,13 +2,9 @@ name: Obedové menu do Slacku
 
 on:
   schedule:
-    # 10:00 UTC = 11:00 CET (zimný čas)
-    # Po prechode na letný čas to bude chodiť o 12:00
-    # Ak chceš aj v lete o 11:00, pridaj druhý riadok: - cron: '0 9 * * 1-5'
- schedule:
-  - cron: '30 8 * * 1-5'
-  - cron: '30 9 * * 1-5'
-  workflow_dispatch:  # tlačidlo na manuálne spustenie
+    - cron: '30 8 * * 1-5'
+    - cron: '30 9 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   send-menu:
@@ -29,3 +25,4 @@ jobs:
         run: python menu_scraper.py
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          CALORIENINJAS_API_KEY: ${{ secrets.CALORIENINJAS_API_KEY }}
