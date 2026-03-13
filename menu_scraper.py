@@ -597,9 +597,15 @@ def scrape_hotel_set() -> Optional[str]:
             break
 
         if capturing and line.strip():
-            # Preskočíme alergény a pôvod mäsa
-            if line_lower.startswith("alerg") or "pôvod mäsa" in line_lower:
-                continue
+            # Skončíme pri texte za menu (objednávky, alergény, pôvod, váha)
+            stop_keywords = [
+                "nestíha", "objednáv", "tel. kontakt", "tel.kontakt",
+                "šéfkuchár", "alerg", "pôvod mäsa", "používame pri",
+                "váha prílohy", "objem polievky", "obilniny obsahujúce",
+                "menu box", "www.hotelset",
+            ]
+            if any(kw in line_lower for kw in stop_keywords):
+                break
             captured.append(line.strip())
 
     if not captured:
@@ -743,6 +749,17 @@ def scrape_stage_ntc() -> Optional[str]:
                              "reklam", "cookie", "appstore", "google play"]
             if any(kw in line_lower for kw in skip_keywords):
                 continue
+
+            # Zastavíme pri konci menu sekcie na menucka.sk
+            stop_keywords = ["tlačiť menu", "zoznam alergénov", "zobraziť väčšiu",
+                             "popis reštaurácie", "reštaurácia stage",
+                             "terasa", "zobraziť ponuku", "pivovaru dock",
+                             "ako motivovať", "typické jarné", "knižné novinky",
+                             "všetky články", "menučka magazín", "mobilná appka",
+                             "pre reštaurácie", "naše ďalšie", "sledujte nás",
+                             "tipy vo vašom"]
+            if any(kw in line_lower for kw in stop_keywords):
+                break
 
             if len(line) > 2:
                 captured.append(line)
