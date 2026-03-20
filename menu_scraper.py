@@ -495,6 +495,19 @@ def scrape_blue_champs() -> Optional[str]:
                     )
                     if is_next_day and re.search(r'\d+\.\d+\.\d{4}', lines[j]):
                         break
+                    # Stop pri alergénoch, footeri a navigácii stránky
+                    bc_stop_keywords = [
+                        "obilniny obsahujúce", "kôrovce a výrobky",
+                        "vajcia a výrobky", "arašidy a výrobky",
+                        "domov", "denne menu", "denné menu",
+                        "nápoje", "vínna karta", "kontakt",
+                        "rezerváci", "otváracie hodin",
+                        "copyright", "scroll to top",
+                        "onlinebrand", "created by",
+                        "+421", "info@thebluechamps",
+                    ]
+                    if any(kw in next_lower for kw in bc_stop_keywords):
+                        break
                     if lines[j].strip():
                         day_lines.append(lines[j].strip())
                 today_section = "\n".join(day_lines)
