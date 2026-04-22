@@ -272,10 +272,26 @@ def format_blue_champs(text: str) -> str:
         else:
             merged.append(lines[i])
             i += 1
- 
-    return "\n".join(merged)
- 
- 
+
+    # Zlúčime rozdelené prvé písmená názvu jedla.
+    # Napr. "0,33l H" + "ovädzí vývar, rezance" → "0,33l Hovädzí vývar, rezance".
+    # Vzniká to pri HTML ako <b>H</b>ovädzí, kde bs4 rozdelí text nodes newlinom.
+    SK_UPPER = r'A-ZÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ'
+    merged2 = []
+    for line in merged:
+        if (
+            merged2
+            and re.search(rf'\s[{SK_UPPER}]$', merged2[-1])
+            and line
+            and line[0].islower()
+        ):
+            merged2[-1] = merged2[-1] + line
+        else:
+            merged2.append(line)
+
+    return "\n".join(merged2)
+
+
 def format_hotel_set(text: str) -> str:
     """Formátovanie pre Hotel Set – odstráni alergény, rozdelí položky, zlúči ceny."""
     # Rozdelíme zlepené položky pred č.) (1.) 2.) atď.)
