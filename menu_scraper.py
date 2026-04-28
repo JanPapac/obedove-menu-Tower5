@@ -748,10 +748,103 @@ def scrape_stage_ntc() -> Optional[str]:
     if not captured:
         log.warning("Stage NTC – dnešné menu sa nenašlo")
         return None
- 
+
     return format_stage_ntc(clean("\n".join(captured)))
- 
- 
+
+
+# ===========================================================================
+# 5) CLOUD RESTAURANT (DoubleTree by Hilton Bratislava)
+# ===========================================================================
+
+def scrape_cloud_restaurant() -> Optional[str]:
+    """
+    Cloud Restaurant @ DoubleTree by Hilton Bratislava.
+    Stránka má sekciu "Polievka podľa ponuky v cene menu / Soup of the day...",
+    za ňou 6 jedál pre celý týždeň (menu je rovnaké pondelok–piatok),
+    a končí pred sekciou "Predjedlá / Starters".
+
+    Každé jedlo má 3 riadky: Slovak (s gramážou), English (s alergénmi), cena.
+    Extrahujeme len Slovak verziu + cenu.
+    """
+    url = "https://doubletree-bratislava.sk/cloud-restaurant/"
+    log.info("Scrapujem Cloud Restaurant: %s", url)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+
+    try:
+        resp = requests.get(url, timeout=15, headers=headers)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error("Cloud Restaurant – chyba pri sťahovaní: %s", e)
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    full_text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in full_text.splitlines() if l.strip()]
+
+    # Nájdeme začiatok denného menu (sekcia s polievkou v cene)
+    start = None
+    for i, line in enumerate(lines):
+        if "polievka podľa ponuky" in line.lower() or "soup of the day" in line.lower():
+            start = i + 1
+            break
+
+    if start is None:
+        log.warning("Cloud Restaurant – sekcia denného menu sa nenašla")
+        return None
+
+    # Nájdeme koniec (začiatok stáleho menu)
+    end = len(lines)
+    end_keywords = ["predjedlá", "starters"]
+    for j in range(start, len(lines)):
+        line_lower = lines[j].lower()
+        if any(line_lower.startswith(kw) or line_lower == kw for kw in end_keywords):
+            end = j
+            break
+
+    section_lines = lines[start:end]
+
+    # Pre každé jedlo nájdeme Slovak riadok (s gramážou) + cenu (v ďalších 1-4 riadkoch)
+    weight_re = re.compile(r'\(\s*\d+\s*g\s*\)', re.IGNORECASE)
+    price_re = re.compile(r'\d+[.,]\d+\s*€')
+
+    output_lines = []
+    i = 0
+    used_indices = set()
+    while i < len(section_lines):
+        line = section_lines[i]
+        if i in used_indices:
+            i += 1
+            continue
+        if weight_re.search(line):
+            # Slovak riadok s jedlom
+            price = ""
+            for k in range(1, 5):
+                if i + k < len(section_lines):
+                    p_match = price_re.search(section_lines[i + k])
+                    if p_match:
+                        price = p_match.group(0)
+                        used_indices.add(i + k)
+                        # Zaznačíme aj prípadný anglický riadok medzi (i+1 .. i+k-1)
+                        for m in range(1, k):
+                            used_indices.add(i + m)
+                        break
+            if price:
+                output_lines.append(f"• {line} — *{price}*")
+            else:
+                output_lines.append(f"• {line}")
+        i += 1
+
+    if not output_lines:
+        log.warning("Cloud Restaurant – nepodarilo sa extrahovať jedlá")
+        return None
+
+    return "_Polievka dňa v cene menu_\n" + "\n".join(output_lines)
+
+
 # ===========================================================================
 # Slack odoslanie
 # ===========================================================================
@@ -779,13 +872,15 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
         "The Blue Champs": "🔵",
         "Hotel Set": "🏨",
         "Stage (NTC)": "🎾",
+        "Cloud Restaurant": "☁️",
     }
- 
+
     restaurant_urls = {
         "Tower Events (Cantína)": "https://towerevents.sk/menu/",
         "The Blue Champs": "https://www.thebluechamps.sk/denne-menu/",
         "Hotel Set": "https://www.hotelset.sk/domov/restauracia/",
         "Stage (NTC)": "https://restauraciastage.sk/",
+        "Cloud Restaurant": "https://doubletree-bratislava.sk/cloud-restaurant/",
     }
  
     for name, menu_text in menus.items():
@@ -870,6 +965,7 @@ def main():
         "The Blue Champs": scrape_blue_champs(),
         "Hotel Set": scrape_hotel_set(),
         "Stage (NTC)": scrape_stage_ntc(),
+        "Cloud Restaurant": scrape_cloud_restaurant(),
     }
  
     # Pridáme odhad kalórií
