@@ -598,7 +598,7 @@ def scrape_hotel_set() -> Optional[str]:
     reader = PdfReader(BytesIO(pdf_resp.content))
     full_text = ""
     for page in reader.pages:
-        full_text += page.extract_text() + "\n"
+        full_text += page.extract_text(extraction_mode="layout") + "\n"
 
     if not full_text.strip():
         log.warning("Hotel Set – PDF je prázdny alebo nečitateľný")
@@ -792,11 +792,17 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     # Hľadáme link na PDF s obedovým/týždenným menu (nie sezónne, hlavné,
     # nápojové alebo vínne menu – tie majú iné slová v názve súboru)
-    pdf_url = None
+     pdf_url = None
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
         href_lower = href.lower()
-        if ".pdf" in href_lower and "obedov" in href_lower:
+        if ".pdf" not in href_lower:
+            continue
+        link_text = a_tag.get_text(" ", strip=True).lower()
+        if "týžd" in link_text or "tyzd" in link_text or "obedov" in link_text:
+            pdf_url = href
+            break
+        if "obedov" in href_lower:
             pdf_url = href
             break
 
