@@ -792,7 +792,7 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     # Hľadáme link na PDF s obedovým/týždenným menu (nie sezónne, hlavné,
     # nápojové alebo vínne menu – tie majú iné slová v názve súboru)
-     pdf_url = None
+    pdf_url = None
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
         href_lower = href.lower()
