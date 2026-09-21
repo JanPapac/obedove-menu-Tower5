@@ -769,7 +769,8 @@ def scrape_cloud_restaurant() -> Optional[str]:
     netreba filtrovať podľa dňa – stačí vytiahnuť všetkých 6 jedál.
 
     Formát PDF (3 riadky na jedlo):
-      1) SK názov + gramáž, napr. "Grilovaný losos... (150 g)"
+      1) SK názov + gramáž, napr. "Grilovaný losos... 150 g"
+         (od 21.9.2026 bez zátvoriek okolo gramáže – predtým "(150 g)")
       2) EN názov + alergény, napr. "Grilled salmon... (7,12)"
       3) cena, napr. "12.90 Eur" alebo "12,90 Eur" (formát kolíše)
     """
@@ -839,7 +840,9 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
-    weight_re = re.compile(r'\(\s*\d+\s*g\s*\)', re.IGNORECASE)
+    # Gramáž bola donedávna v zátvorkách "(150 g)", od 21.9.2026 je bez nich
+    # ("150 g") – zátvorky robíme nepovinné, aby fungovalo oboje.
+    weight_re = re.compile(r'\b\d+\s*g\b', re.IGNORECASE)
     # Cena môže byť "12,90 Eur", "10.90 Eur" alebo "12,90€" – formát v PDF kolíše
     price_re = re.compile(r'\d+[.,]\d+\s*(?:€|eur)', re.IGNORECASE)
 
