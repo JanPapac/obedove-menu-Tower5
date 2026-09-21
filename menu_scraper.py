@@ -832,7 +832,12 @@ def scrape_cloud_restaurant() -> Optional[str]:
     reader = PdfReader(BytesIO(pdf_resp.content))
     full_text = ""
     for page in reader.pages:
-        full_text += page.extract_text() + "\n"
+        # Rovnaký problém ako pri Hotel Set: predvolený "plain" extraktor
+        # pypdf pri tomto PDF (vlastný/vložený font) rozseká slová na
+        # samostatné riadky, takže napr. "150 g" vyjde ako "150" a "g" na
+        # dvoch riadkoch a weight_re nikdy nič nenájde. "layout" mód berie
+        # skutočnú pozíciu textu, takže riadky ostanú pohromade.
+        full_text += page.extract_text(extraction_mode="layout") + "\n"
 
     if not full_text.strip():
         log.warning("Cloud Restaurant – PDF je prázdny alebo nečitateľný")
