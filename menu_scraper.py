@@ -787,20 +787,23 @@ def scrape_cloud_restaurant() -> Optional[str]:
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Cloud Restaurant – chyba pri sťahovaní stránky: %s", e)
-        return None
+        return f"⚠️ _DEBUG – nepodarilo sa stiahnuť {page_url}: {e}_"
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
     # Hľadáme link na PDF s obedovým/týždenným menu (nie sezónne, hlavné,
     # nápojové alebo vínne menu – tie majú iné slová v názve súboru)
     pdf_url = None
+    all_pdf_links = []
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
         href_lower = href.lower()
         if ".pdf" not in href_lower:
             continue
-        link_text = a_tag.get_text(" ", strip=True).lower()
-        if "týžd" in link_text or "tyzd" in link_text or "obedov" in link_text:
+        link_text = a_tag.get_text(" ", strip=True)
+        all_pdf_links.append((link_text, href))
+        link_text_lower = link_text.lower()
+        if "týžd" in link_text_lower or "tyzd" in link_text_lower or "obedov" in link_text_lower:
             pdf_url = href
             break
         if "obedov" in href_lower:
@@ -809,7 +812,8 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     if not pdf_url:
         log.warning("Cloud Restaurant – nenašiel sa link na PDF obedového menu")
-        return None
+        links_dump = "\n".join(f"{t!r} -> {h}" for t, h in all_pdf_links) or "(žiadne .pdf odkazy na stránke)"
+        return f"⚠️ _DEBUG – nenašiel sa link na PDF. Všetky .pdf odkazy na stránke:_\n```\n{links_dump}\n```"
 
     log.info("Cloud Restaurant – PDF URL: %s", pdf_url)
 
@@ -818,7 +822,7 @@ def scrape_cloud_restaurant() -> Optional[str]:
         pdf_resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Cloud Restaurant – chyba pri sťahovaní PDF: %s", e)
-        return None
+        return f"⚠️ _DEBUG – nepodarilo sa stiahnuť PDF {pdf_url}: {e}_"
 
     try:
         from pypdf import PdfReader
@@ -827,7 +831,7 @@ def scrape_cloud_restaurant() -> Optional[str]:
             from PyPDF2 import PdfReader
         except ImportError:
             log.error("Cloud Restaurant – chýba pypdf alebo PyPDF2 knižnica")
-            return None
+            return "⚠️ _DEBUG – chýba pypdf/PyPDF2 knižnica v prostredí_"
 
     reader = PdfReader(BytesIO(pdf_resp.content))
     full_text = ""
@@ -841,7 +845,11 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     if not full_text.strip():
         log.warning("Cloud Restaurant – PDF je prázdny alebo nečitateľný")
-        return None
+        return (
+            f"⚠️ _DEBUG – PDF stiahnuté ({len(pdf_resp.content)} bajtov, "
+            f"pdf_url={pdf_url}), ale extract_text() vrátil prázdny text. "
+            f"Počet strán={len(reader.pages)}_"
+        )
 
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
 
