@@ -19,6 +19,7 @@ Použitie:
 import os
 import re
 import sys
+import time
 import locale
 import logging
 from io import BytesIO
@@ -760,6 +761,48 @@ def scrape_stage_ntc() -> Optional[str]:
 # 5) CLOUD RESTAURANT (DoubleTree by Hilton Bratislava)
 # ===========================================================================
  
+def _get_with_retry(url: str, headers: dict, timeout: int = 15, retries: int = 5) -> requests.Response:
+    """
+    GET s opakovaním pri HTTP 429/5xx. cloudrestaurant.sk beží za CDN/WAF
+    (typicky Cloudflare), ktorá zdieľané IP adresy GitHub Actions runnerov
+    občas obmedzí (429 Too Many Requests) – nie je to trvalá blokáda IP,
+    len rate-limit, takže pomôže počkanie a skúsenie znova. Rešpektuje
+    hlavičku "Retry-After", ak ju server pošle.
+    """
+    last_exc = None
+    resp = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+        except requests.RequestException as e:
+            last_exc = e
+            resp = None
+ 
+        if resp is not None and resp.status_code not in (429, 500, 502, 503, 504):
+            resp.raise_for_status()
+            return resp
+ 
+        if attempt == retries:
+            if resp is not None:
+                resp.raise_for_status()
+            raise last_exc or requests.RequestException(f"GET {url} zlyhalo po {retries} pokusoch")
+ 
+        retry_after = resp.headers.get("Retry-After") if resp is not None else None
+        try:
+            wait_s = float(retry_after) if retry_after else (3 ** attempt)
+        except ValueError:
+            wait_s = 3 ** attempt
+        wait_s = min(wait_s, 45)
+        status = resp.status_code if resp is not None else "(bez odpovede)"
+        log.warning(
+            "GET %s – pokus %d/%d zlyhal (status=%s), čakám %.0fs a skúšam znova",
+            url, attempt, retries, status, wait_s,
+        )
+        time.sleep(wait_s)
+ 
+    raise last_exc or requests.RequestException(f"GET {url} zlyhalo")
+ 
+ 
 def scrape_cloud_restaurant() -> Optional[str]:
     """
     Cloud Restaurant @ DoubleTree by Hilton Bratislava.
@@ -802,15 +845,19 @@ def scrape_cloud_restaurant() -> Optional[str]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # Niektoré WAF/anti-hotlink pravidlá (najmä na /wp-content/uploads/)
+        # prísnejšie kontrolujú požiadavky bez Refereru z vlastnej domény –
+        # pridanie ho robí požiadavku menej podozrivou pre bot-detekciu.
+        "Referer": "https://cloudrestaurant.sk/",
+        "Accept": "application/pdf,application/json,text/html,*/*",
     }
  
     try:
-        resp = requests.get(api_url, timeout=15, headers=headers)
-        resp.raise_for_status()
+        resp = _get_with_retry(api_url, headers=headers)
         media_items = resp.json()
     except (requests.RequestException, ValueError) as e:
         log.error("Cloud Restaurant – chyba pri čítaní WP REST API: %s", e)
-        return f"⚠️ _DEBUG – chyba pri čítaní {api_url}: {e}_"
+        return f"⚠️ _DEBUG – chyba pri čítaní {api_url} (aj po opakovaní): {e}_"
  
     # Názov je "dátumový" ak obsahuje len číslice, bodky a pomlčky
     # (žiadne písmená) – presne tak reštaurácia pomenúva týždenné PDF.
@@ -837,11 +884,10 @@ def scrape_cloud_restaurant() -> Optional[str]:
     log.info("Cloud Restaurant – PDF URL (REST API): %s", pdf_url)
  
     try:
-        pdf_resp = requests.get(pdf_url, timeout=15, headers=headers)
-        pdf_resp.raise_for_status()
+        pdf_resp = _get_with_retry(pdf_url, headers=headers)
     except requests.RequestException as e:
         log.error("Cloud Restaurant – chyba pri sťahovaní PDF: %s", e)
-        return f"⚠️ _DEBUG – nepodarilo sa stiahnuť PDF {pdf_url}: {e}_"
+        return f"⚠️ _DEBUG – nepodarilo sa stiahnuť PDF {pdf_url} (aj po opakovaní): {e}_"
  
     try:
         from pypdf import PdfReader
