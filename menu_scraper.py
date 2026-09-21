@@ -762,11 +762,26 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     OD LETA 2026 má reštaurácia vlastnú stránku cloudrestaurant.sk – stará
     adresa doubletree-bratislava.sk/cloud-restaurant/ už len presmerúva sem.
-    Obedové menu zároveň prestalo byť priamo v HTML stránky (staré "polievka
-    podľa ponuky" / "soup of the day" markery tam už nie sú) a je linkované
-    ako PDF pod nadpisom "Týždenné menu" (súbor obsahuje "obedov" v názve,
-    napr. Obedove-menu-jun-1.pdf). Menu je rovnaké pondelok–piatok, takže
-    netreba filtrovať podľa dňa – stačí vytiahnuť všetkých 6 jedál.
+
+    DÔLEŽITÉ (zistené 21.9.2026 cez debug výpis priamo z GitHub Actions):
+    odkaz na "Týždenné menu" si stránka dopĺňa do DOM až cez JavaScript po
+    natiahnutí – obyčajný requests.get() (bez prehliadača / bez JS) v HTML
+    vidí len 2 statické .pdf odkazy ("Raňajkové menu" a "Ochrana osobných
+    údajov"), nikdy nie ten týždenný. Preto celé predchádzajúce hľadanie
+    <a href> odkazov na hlavnej stránke bolo od základu zlé – fungovalo len
+    v nástroji, ktorý si stránku vie vyrenderovať s JS (a tak sa to omylom
+    javilo ako "funkčné" pri manuálnom overovaní).
+
+    Namiesto scrapovania HTML preto čítame WordPress REST API
+    (/wp-json/wp/v2/media), ktoré WordPress vždy vráti ako čisté JSON dáta
+    bez JS. Reštaurácia nahráva týždenné menu vždy s názvom = dátumový
+    rozsah (napr. "21.-25.9.2026", "14.-17.9.2026", "31.8.-4.9.2026") a nič
+    iné v knižnici médií (Sezónne/Hlavné/Raňajkové/Nápojové/Vínne menu) taký
+    "len čísla, bodky a pomlčky" názov nemá – podľa toho ho spoľahlivo
+    rozoznáme a zoberieme najnovší.
+
+    Menu je rovnaké pondelok–piatok, takže netreba filtrovať podľa dňa –
+    stačí vytiahnuť všetkých 6 jedál.
 
     Formát PDF (3 riadky na jedlo):
       1) SK názov + gramáž, napr. "Grilovaný losos... 150 g"
@@ -774,8 +789,11 @@ def scrape_cloud_restaurant() -> Optional[str]:
       2) EN názov + alergény, napr. "Grilled salmon... (7,12)"
       3) cena, napr. "12.90 Eur" alebo "12,90 Eur" (formát kolíše)
     """
-    page_url = "https://cloudrestaurant.sk/"
-    log.info("Scrapujem Cloud Restaurant: %s", page_url)
+    api_url = (
+        "https://cloudrestaurant.sk/wp-json/wp/v2/media"
+        "?media_type=application&per_page=20&orderby=date&order=desc"
+    )
+    log.info("Scrapujem Cloud Restaurant (WP REST API): %s", api_url)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -783,39 +801,36 @@ def scrape_cloud_restaurant() -> Optional[str]:
     }
 
     try:
-        resp = requests.get(page_url, timeout=15, headers=headers)
+        resp = requests.get(api_url, timeout=15, headers=headers)
         resp.raise_for_status()
-    except requests.RequestException as e:
-        log.error("Cloud Restaurant – chyba pri sťahovaní stránky: %s", e)
-        return f"⚠️ _DEBUG – nepodarilo sa stiahnuť {page_url}: {e}_"
+        media_items = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.error("Cloud Restaurant – chyba pri čítaní WP REST API: %s", e)
+        return f"⚠️ _DEBUG – chyba pri čítaní {api_url}: {e}_"
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Hľadáme link na PDF s obedovým/týždenným menu (nie sezónne, hlavné,
-    # nápojové alebo vínne menu – tie majú iné slová v názve súboru)
+    # Názov je "dátumový" ak obsahuje len číslice, bodky a pomlčky
+    # (žiadne písmená) – presne tak reštaurácia pomenúva týždenné PDF.
+    date_only_re = re.compile(r'^[\d.\-]+$')
     pdf_url = None
-    all_pdf_links = []
-    for a_tag in soup.find_all("a", href=True):
-        href = a_tag["href"]
-        href_lower = href.lower()
-        if ".pdf" not in href_lower:
-            continue
-        link_text = a_tag.get_text(" ", strip=True)
-        all_pdf_links.append((link_text, href))
-        link_text_lower = link_text.lower()
-        if "týžd" in link_text_lower or "tyzd" in link_text_lower or "obedov" in link_text_lower:
-            pdf_url = href
-            break
-        if "obedov" in href_lower:
-            pdf_url = href
+    for item in media_items:
+        title = ((item.get("title") or {}).get("rendered") or "").strip()
+        mime = item.get("mime_type", "")
+        if mime == "application/pdf" and title and date_only_re.match(title):
+            pdf_url = item.get("source_url")
             break
 
     if not pdf_url:
-        log.warning("Cloud Restaurant – nenašiel sa link na PDF obedového menu")
-        links_dump = "\n".join(f"{t!r} -> {h}" for t, h in all_pdf_links) or "(žiadne .pdf odkazy na stránke)"
-        return f"⚠️ _DEBUG – nenašiel sa link na PDF. Všetky .pdf odkazy na stránke:_\n```\n{links_dump}\n```"
+        log.warning("Cloud Restaurant – v REST API sa nenašlo týždenné menu")
+        titles_dump = "\n".join(
+            f"{((i.get('title') or {}).get('rendered') or '')!r} ({i.get('mime_type','')})"
+            for i in media_items
+        ) or "(žiadne položky v knižnici médií)"
+        return (
+            f"⚠️ _DEBUG – v media knižnici sa nenašlo PDF s dátumovým názvom:_\n"
+            f"```\n{titles_dump}\n```"
+        )
 
-    log.info("Cloud Restaurant – PDF URL: %s", pdf_url)
+    log.info("Cloud Restaurant – PDF URL (REST API): %s", pdf_url)
 
     try:
         pdf_resp = requests.get(pdf_url, timeout=15, headers=headers)
