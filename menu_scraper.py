@@ -875,7 +875,17 @@ def scrape_cloud_restaurant() -> Optional[str]:
 
     if not output_lines:
         log.warning("Cloud Restaurant – nepodarilo sa extrahovať jedlá z PDF")
-        return None
+        # --- DOČASNÝ DEBUG (odstrániť po diagnostike) ---------------------
+        # Doterajšie dve opravy (regex na gramáž aj layout extrakcia) tu
+        # zjavne nestačili. Namiesto tichého None pošleme do Slacku prvých
+        # pár riadkov toho, čo sa z PDF naozaj vytiahlo, aby bolo vidieť
+        # presne o čo ide, keď sa nedá pozrieť do GitHub Actions logu.
+        debug_lines = "\n".join(f"{i}: {l!r}" for i, l in enumerate(lines[:25]))
+        return (
+            f"⚠️ _DEBUG – nepodarilo sa nájsť jedlá. pdf_url={pdf_url}, "
+            f"počet riadkov={len(lines)}_\n```\n{debug_lines}\n```"
+        )
+        # --------------------------------------------------------------
 
     return "_Polievka dňa v cene menu_\n" + "\n".join(output_lines)
 
