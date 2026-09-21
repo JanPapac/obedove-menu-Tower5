@@ -3,19 +3,19 @@
 Obedové menu scraper → Slack webhook
 =====================================
 Scrapuje denné menu zo štyroch reštaurácií a posiela do Slack kanála.
-
+ 
 Reštaurácie:
   1. Tower Events (Cantína)  — HTML tabuľka
   2. The Blue Champs         — HTML s heading per deň
   3. Hotel Set               — PDF linkovaný zo stránky
   4. Stage Restaurant NTC    — menucka.sk
-
+ 
 Použitie:
   pip install requests beautifulsoup4 pypdf
   export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"
   python menu_scraper.py
 """
-
+ 
 import os
 import re
 import sys
@@ -24,17 +24,21 @@ import logging
 from io import BytesIO
 from datetime import datetime, date
 from typing import Optional
-
+ 
 import requests
 from bs4 import BeautifulSoup
-
+ 
 # ---------------------------------------------------------------------------
 # Konfigurácia
 # ---------------------------------------------------------------------------
-
+ 
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 CALORIENINJAS_API_KEY = os.environ.get("CALORIENINJAS_API_KEY", "")
-
+# Keď je DRY_RUN zapnutý (napr. "1"/"true"), správa sa NIKDY nepošle do
+# Slacku, aj keby bola SLACK_WEBHOOK_URL nastavená – len sa vypíše náhľad
+# do logu behu. Slúži na testovanie bez spamovania ostrého kanála.
+DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+ 
 # Slovensko-anglický slovník jedál pre CalorieNinjas
 SK_TO_EN_FOOD = {
     # Mäso
@@ -86,34 +90,34 @@ SK_TO_EN_FOOD = {
     "parmezán": "parmesan", "mozzarell": "mozzarella",
     "cheddar": "cheddar",
 }
-
-
+ 
+ 
 def translate_dish_to_english(dish_name: str) -> str:
     """Preloží slovenský názov jedla do angličtiny pre CalorieNinjas."""
     result_parts = []
     dish_lower = dish_name.lower()
-
+ 
     # Najprv skúsime dlhšie frázy
     for sk, en in sorted(SK_TO_EN_FOOD.items(), key=lambda x: -len(x[0])):
         if sk in dish_lower:
             if en not in result_parts:
                 result_parts.append(en)
-
+ 
     if result_parts:
         return ", ".join(result_parts[:4])  # Max 4 zložky
-
+ 
     # Ak nič nenájdeme, vrátime originál
     return dish_name
-
-
+ 
+ 
 def get_calories(dish_name: str) -> Optional[int]:
     """Získa odhad kalórií z CalorieNinjas API."""
     if not CALORIENINJAS_API_KEY:
         return None
-
+ 
     english_name = translate_dish_to_english(dish_name)
     log.debug("Kalórie pre: %s → %s", dish_name, english_name)
-
+ 
     try:
         resp = requests.get(
             "https://api.calorieninjas.com/v1/nutrition",
@@ -129,25 +133,25 @@ def get_calories(dish_name: str) -> Optional[int]:
                 return round(total_cal) if total_cal > 0 else None
     except requests.RequestException:
         pass
-
+ 
     return None
-
-
+ 
+ 
 def add_calories_to_menu(menu_text: str) -> str:
     """Pridá odhad kalórií k hlavným jedlám v menu."""
     if not CALORIENINJAS_API_KEY or not menu_text:
         return menu_text
-
+ 
     lines = menu_text.splitlines()
     result = []
-
+ 
     for line in lines:
         # Identifikujeme riadky s hlavnými jedlami (obsahujú A:, B:, C:, D:, E: alebo 1:, 2:, 3:, 4:)
         is_dish = bool(re.match(r'.*[A-E1-4][.:)\]]', line))
         # Preskočíme polievky, prílohy, šaláty z bufetu
         is_soup = "polievk" in line.lower() or "vývar" in line.lower()
         is_side = "príloh" in line.lower()
-
+ 
         if is_dish and not is_soup and not is_side:
             # Extrahujeme názov jedla (odstránime cenu, gramáž, alergény)
             dish_name = re.sub(r'\d+g[/]?\d*[g€]*', '', line)  # gramáž
@@ -158,17 +162,17 @@ def add_calories_to_menu(menu_text: str) -> str:
             dish_name = re.sub(r'[A-E][.:)\]]\s*', '', dish_name, count=1)
             dish_name = re.sub(r'[1-4][.:)\]]\s*', '', dish_name, count=1)
             dish_name = dish_name.strip().strip('*').strip()
-
+ 
             if len(dish_name) > 5:
                 cal = get_calories(dish_name)
                 if cal and cal > 50:
                     line = f"{line}  (~{cal} kcal)"
-
+ 
         result.append(line)
-
+ 
     return "\n".join(result)
-
-
+ 
+ 
 # Mapovanie slovenských názvov dní (bez diakritiky aj s ňou)
 SK_DAYS = {
     0: ["pondelok"],
@@ -177,91 +181,91 @@ SK_DAYS = {
     3: ["štvrtok", "stvrtok"],
     4: ["piatok"],
 }
-
+ 
 TODAY_INDEX = date.today().weekday()  # 0=pondelok ... 4=piatok
-
+ 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
-
-
+ 
+ 
 def today_matches(text: str) -> bool:
     """Zistí, či text obsahuje názov dnešného dňa (slovensky)."""
     if TODAY_INDEX > 4:
         return False
     text_lower = text.lower()
     return any(day in text_lower for day in SK_DAYS[TODAY_INDEX])
-
-
+ 
+ 
 def today_date_str() -> str:
     """Vráti dnešný dátum vo formáte D.M.YYYY."""
     d = date.today()
     return f"{d.day}.{d.month}.{d.year}"
-
-
+ 
+ 
 def clean(text: str) -> str:
     """Vyčistí text – rozdelí zlepené položky, odstráni nadbytočné medzery."""
     # 1) Vložíme nový riadok pred číslované položky (1.), 2.), A), B) atď.)
     #    ktoré sú zlepené s predchádzajúcou cenou
     text = re.sub(r'(€\s*(?:\d[\d,]*)?)\s*(\d+\.\))', r'\1\n\2', text)
     text = re.sub(r'(€\s*(?:\d[\d,]*)?)\s*([A-E]\))', r'\1\n\2', text)
-
+ 
     # 2) Odstránime zlepené alergény na konci ceny (8,20€1,3,7,8,9 → 8,20€)
     text = re.sub(r'([\d,]+€)\s*(\d[\d,]+)\s*$', r'\1', text, flags=re.MULTILINE)
-
+ 
     # 3) Zredukujeme viacnásobné medzery na jednu
     text = re.sub(r'  +', ' ', text)
-
+ 
     # 4) Vyčistíme riadky
     lines = [line.strip() for line in text.splitlines()]
     lines = [l for l in lines if l]
     return "\n".join(lines)
-
-
+ 
+ 
 def format_tower_events(text: str) -> str:
     """Formátovanie pre Tower Events – rozdelí sekcie a položky."""
     # Rozdelíme pred sekčnými nadpismi
     text = re.sub(r'(?<!\n)(Polievka)\b', r'\n\1', text)
     text = re.sub(r'(?<!\n)(Hlavné jedlo)\b', r'\n\1', text)
     text = re.sub(r'(?<!\n)(Prílohy)\b', r'\n\1', text)
-
+ 
     # Rozdelíme pred položkami A: B: C: D: E: (ale len keď sú na začiatku
     # alebo po cene/medzere, nie uprostred slova)
     text = re.sub(r'(€[^\n]*?)\s*\b([A-E]:)', r'\1\n\2', text)
     # Ak sú na jednom riadku: "porcia/1,50€B: Kombi" → nový riadok
     text = re.sub(r'(€)\s*([A-E]:)', r'\1\n\2', text)
-
+ 
     # V A la Carte: rozdelíme pred 1. 2. 3. atď. (zlepené s €)
     text = re.sub(r'(€)\s+(\d+\.\s)', r'\1\n\2', text)
-
+ 
     # Zredukujeme medzery a vyčistíme
     text = re.sub(r'  +', ' ', text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     return "\n".join(lines)
-
-
+ 
+ 
 def format_blue_champs(text: str) -> str:
     """Formátovanie pre Blue Champs – rozdelí polievky, fit menu a položky."""
     # Rozdelíme pred "Fit menu:" / "FIT MENU" / "Fit Menu"
     text = re.sub(r'(?<!\n)([Ff]it\s*[Mm]enu)', r'\n\1', text)
-
+ 
     # Rozdelíme pred objemom polievky zlepeným s predchádzajúcim textom
     # napr. "...parmezán (1,3,4,7)0,33l Šampiňónový" → nový riadok pred 0,33l
     text = re.sub(r'(\))\s*(0,\d+l\s)', r'\1\n\2', text)
     text = re.sub(r'(€)\s*(0,\d+l\s)', r'\1\n\2', text)
-
+ 
     # Rozdelíme pred číslovanými položkami 1: 2: 3: 4: 5:
     text = re.sub(r'(?<!\n)(?<=\))\s*(\d+:\s)', r'\n\1', text)
     text = re.sub(r'(?<!\n)(?<=€)\s*(\d+:\s)', r'\n\1', text)
     # Aj keď sú na začiatku po texte bez €/)
     text = re.sub(r'([^\n])\s+(\d+:\s+\d+g)', r'\1\n\2', text)
-
+ 
     # Zredukujeme medzery a vyčistíme
     text = re.sub(r'  +', ' ', text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-
+ 
     # Prilepíme osamelé číslice "1:", "2:" atď. k nasledujúcemu riadku
     merged = []
     i = 0
@@ -272,7 +276,7 @@ def format_blue_champs(text: str) -> str:
         else:
             merged.append(lines[i])
             i += 1
-
+ 
     # Zlúčime rozdelené prvé písmená názvu jedla.
     # Napr. "0,33l H" + "ovädzí vývar, rezance" → "0,33l Hovädzí vývar, rezance".
     # Vzniká to pri HTML ako <b>H</b>ovädzí, kde bs4 rozdelí text nodes newlinom.
@@ -288,10 +292,10 @@ def format_blue_champs(text: str) -> str:
             merged2[-1] = merged2[-1] + line
         else:
             merged2.append(line)
-
+ 
     return "\n".join(merged2)
-
-
+ 
+ 
 def format_hotel_set(text: str) -> str:
     """Formátovanie pre Hotel Set – odstráni alergény, rozdelí položky, zlúči ceny."""
     # Rozdelíme zlepené položky pred č.) (1.) 2.) atď.)
@@ -305,7 +309,7 @@ def format_hotel_set(text: str) -> str:
     # Zredukujeme medzery
     text = re.sub(r'  +', ' ', text)
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-
+ 
     # Prilepíme osamelé ceny (riadok obsahujúci len cenu) k predchádzajúcemu riadku
     merged = []
     for line in lines:
@@ -314,14 +318,14 @@ def format_hotel_set(text: str) -> str:
             merged[-1] = merged[-1] + ' ' + line
         else:
             merged.append(line)
-
+ 
     return "\n".join(merged)
-
-
+ 
+ 
 def format_stage_ntc(text: str) -> str:
     """Formátovanie pre Stage NTC – zlúči osamelé ceny k jedlám."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-
+ 
     # Prilepíme osamelé ceny k predchádzajúcemu riadku
     # Cena: "8,50 €", "11,90 €", "7,90€" alebo len "8,50€"
     merged = []
@@ -330,14 +334,14 @@ def format_stage_ntc(text: str) -> str:
             merged[-1] = merged[-1] + ' ' + line
         else:
             merged.append(line)
-
+ 
     return "\n".join(merged)
-
-
+ 
+ 
 # ===========================================================================
 # 1) TOWER EVENTS (Cantína)
 # ===========================================================================
-
+ 
 def scrape_tower_events() -> Optional[str]:
     """
     Stránka obsahuje jednu veľkú HTML tabuľku s celým týždňovým menu.
@@ -346,29 +350,29 @@ def scrape_tower_events() -> Optional[str]:
     """
     url = "https://towerevents.sk/menu/"
     log.info("Scrapujem Tower Events: %s", url)
-
+ 
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Tower Events – chyba pri sťahovaní: %s", e)
         return None
-
+ 
     soup = BeautifulSoup(resp.text, "html.parser")
     table = soup.find("table")
     if not table:
         log.warning("Tower Events – nenašla sa tabuľka")
         return None
-
+ 
     rows = table.find_all("tr")
-
+ 
     # Nájdeme rozsah riadkov pre dnešný deň
     day_start = None
     day_end = None
     day_names_all = []
     for name_list in SK_DAYS.values():
         day_names_all.extend(name_list)
-
+ 
     for i, row in enumerate(rows):
         text = row.get_text(" ", strip=True).lower()
         # Hľadáme riadok, kde sa nachádza iba názov dňa
@@ -377,14 +381,14 @@ def scrape_tower_events() -> Optional[str]:
         elif day_start is not None and any(d in text for d in day_names_all):
             day_end = i
             break
-
+ 
     if day_start is None:
         log.warning("Tower Events – dnešný deň sa nenašiel v tabuľke")
         return None
-
+ 
     if day_end is None:
         day_end = len(rows)
-
+ 
     # Extrahujeme riadky
     lines = []
     for row in rows[day_start:day_end]:
@@ -396,10 +400,10 @@ def scrape_tower_events() -> Optional[str]:
             # Preskočíme prázdne alebo len whitespace riadky
             if line.strip():
                 lines.append(line)
-
+ 
     if not lines:
         return None
-
+ 
     # Hľadáme A la Carte MENU pre dnešný deň
     for row in rows:
         text = row.get_text(" ", strip=True)
@@ -418,18 +422,18 @@ def scrape_tower_events() -> Optional[str]:
                     today_name = day_names_sk.get(TODAY_INDEX, "")
                     if not today_name:
                         break
-
+ 
                     # Nájdeme dnešnú sekciu v texte
                     text_lower = cell_text.lower()
                     start = text_lower.find(today_name)
                     if start == -1:
                         break
-
+ 
                     # Posunieme sa za názov dňa a dvojbodku
                     start_content = cell_text.find(":", start) + 1
                     if start_content == 0:
                         break
-
+ 
                     # Nájdeme koniec (ďalší deň)
                     end = len(cell_text)
                     for d_name in day_names_sk.values():
@@ -438,21 +442,21 @@ def scrape_tower_events() -> Optional[str]:
                         pos = text_lower.find(d_name, start_content)
                         if pos != -1 and pos < end:
                             end = pos
-
+ 
                     alacarte_text = cell_text[start_content:end].strip()
                     if alacarte_text:
                         lines.append("\n🍽️ *A la Carte:*")
                         lines.append(alacarte_text)
                     break
             break
-
+ 
     return format_tower_events("\n".join(lines))
-
-
+ 
+ 
 # ===========================================================================
 # 2) THE BLUE CHAMPS
 # ===========================================================================
-
+ 
 def scrape_blue_champs() -> Optional[str]:
     """
     Stránka má nadpisy pre každý deň (napr. 'Pondelok 2.3.2026').
@@ -461,24 +465,24 @@ def scrape_blue_champs() -> Optional[str]:
     """
     url = "https://www.thebluechamps.sk/denne-menu/"
     log.info("Scrapujem The Blue Champs: %s", url)
-
+ 
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Blue Champs – chyba pri sťahovaní: %s", e)
         return None
-
+ 
     soup = BeautifulSoup(resp.text, "html.parser")
-
+ 
     # Extrahujeme celý text stránky
     full_text = soup.get_text("\n", strip=True)
     lines = full_text.splitlines()
-
+ 
     # Nájdeme týždennú ponuku (polievka + fit menu)
     weekly_section = ""
     all_day_names = ["pondelok", "utorok", "streda", "štvrtok", "stvrtok", "piatok"]
-
+ 
     for i, line in enumerate(lines):
         if "ponuka" in line.lower() and "týžd" in line.lower():
             # Zoberieme riadky až po prvý deň
@@ -490,11 +494,11 @@ def scrape_blue_champs() -> Optional[str]:
                     weekly_lines.append(lines[j].strip())
             weekly_section = "\n".join(weekly_lines)
             break
-
+ 
     # Nájdeme dnešný deň
     today_section = ""
     today_names = SK_DAYS.get(TODAY_INDEX, [])
-
+ 
     for i, line in enumerate(lines):
         line_lower = line.lower()
         if any(d in line_lower for d in today_names):
@@ -529,23 +533,23 @@ def scrape_blue_champs() -> Optional[str]:
                         day_lines.append(lines[j].strip())
                 today_section = "\n".join(day_lines)
                 break
-
+ 
     if not today_section:
         log.warning("Blue Champs – dnešný deň sa nenašiel")
         return None
-
+ 
     result = ""
     if weekly_section:
         result += weekly_section.strip() + "\n\n"
     result += today_section.strip()
-
+ 
     return format_blue_champs(clean(result))
-
-
+ 
+ 
 # ===========================================================================
 # 3) HOTEL SET (PDF)
 # ===========================================================================
-
+ 
 def scrape_hotel_set() -> Optional[str]:
     """
     Stránka reštaurácie obsahuje link na PDF s týždňovým menu.
@@ -554,16 +558,16 @@ def scrape_hotel_set() -> Optional[str]:
     """
     page_url = "https://www.hotelset.sk/domov/restauracia/"
     log.info("Scrapujem Hotel Set: %s", page_url)
-
+ 
     try:
         resp = requests.get(page_url, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Hotel Set – chyba pri sťahovaní stránky: %s", e)
         return None
-
+ 
     soup = BeautifulSoup(resp.text, "html.parser")
-
+ 
     # Hľadáme link na PDF (typicky obsahuje 'Denne-Menu' alebo 'denne-menu' v URL)
     pdf_url = None
     for a_tag in soup.find_all("a", href=True):
@@ -571,20 +575,20 @@ def scrape_hotel_set() -> Optional[str]:
         if ".pdf" in href.lower() and "menu" in href.lower():
             pdf_url = href
             break
-
+ 
     if not pdf_url:
         log.warning("Hotel Set – nenašiel sa link na PDF menu")
         return None
-
+ 
     log.info("Hotel Set – PDF URL: %s", pdf_url)
-
+ 
     try:
         pdf_resp = requests.get(pdf_url, timeout=15)
         pdf_resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Hotel Set – chyba pri sťahovaní PDF: %s", e)
         return None
-
+ 
     # Extrahujeme text z PDF
     try:
         from pypdf import PdfReader
@@ -594,38 +598,38 @@ def scrape_hotel_set() -> Optional[str]:
         except ImportError:
             log.error("Hotel Set – chýba pypdf alebo PyPDF2 knižnica")
             return None
-
+ 
     reader = PdfReader(BytesIO(pdf_resp.content))
     full_text = ""
     for page in reader.pages:
         full_text += page.extract_text(extraction_mode="layout") + "\n"
-
+ 
     if not full_text.strip():
         log.warning("Hotel Set – PDF je prázdny alebo nečitateľný")
         return None
-
+ 
     # Rozdelíme text podľa dní
     day_names_all = []
     for name_list in SK_DAYS.values():
         day_names_all.extend(name_list)
-
+ 
     # Nájdeme dnešnú sekciu
     lines = full_text.splitlines()
     capturing = False
     captured = []
-
+ 
     for line in lines:
         line_lower = line.strip().lower()
-
+ 
         # Začíname zachytávať, keď nájdeme dnešný deň
         if today_matches(line_lower) and not capturing:
             capturing = True
             continue
-
+ 
         # Skončíme, keď nájdeme ďalší deň
         if capturing and any(d in line_lower for d in day_names_all if d not in SK_DAYS.get(TODAY_INDEX, [])):
             break
-
+ 
         if capturing and line.strip():
             # Skončíme pri texte za menu (objednávky, alergény, pôvod, váha)
             stop_keywords = [
@@ -637,18 +641,18 @@ def scrape_hotel_set() -> Optional[str]:
             if any(kw in line_lower for kw in stop_keywords):
                 break
             captured.append(line.strip())
-
+ 
     if not captured:
         log.warning("Hotel Set – dnešný deň sa nenašiel v PDF")
         return None
-
+ 
     return format_hotel_set("\n".join(captured))
-
-
+ 
+ 
 # ===========================================================================
 # 4) STAGE RESTAURANT NTC (menucka.sk)
 # ===========================================================================
-
+ 
 def scrape_stage_ntc() -> Optional[str]:
     """
     Stage Restaurant NTC – menu scrapujeme z menucka.sk.
@@ -656,35 +660,35 @@ def scrape_stage_ntc() -> Optional[str]:
     """
     url = "https://menucka.sk/denne-menu/bratislava/restauracia-stage-ntc-n-e-w-catering"
     log.info("Scrapujem Stage NTC: %s", url)
-
+ 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "sk,cs;q=0.9,en;q=0.8",
     }
-
+ 
     try:
         resp = requests.get(url, timeout=15, headers=headers)
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Stage NTC – chyba pri sťahovaní: %s", e)
         return None
-
+ 
     soup = BeautifulSoup(resp.text, "html.parser")
     page_text = soup.get_text(separator="\n")
     lines = [l.strip() for l in page_text.splitlines() if l.strip()]
-
+ 
     if TODAY_INDEX > 4:
         return None
-
+ 
     today_day_names = SK_DAYS.get(TODAY_INDEX, [])
     day_names_sk_full = {
         0: "Pondelok", 1: "Utorok", 2: "Streda",
         3: "Štvrtok", 4: "Piatok",
     }
     today_full = day_names_sk_full.get(TODAY_INDEX, "")
-
+ 
     # Nájdeme sekciu pre dnešný deň
     # Menucka.sk formát: "Pondelok (03.03.2026)" alebo "Streda (04.03.2026)"
     capturing = False
@@ -695,15 +699,15 @@ def scrape_stage_ntc() -> Optional[str]:
         f"{today_d.day:02d}.{today_d.month:02d}.{today_d.year}",
         f"({today_d.day}.{today_d.month:02d}.{today_d.year})",
     ]
-
+ 
     all_day_names = []
     for v in SK_DAYS.values():
         all_day_names.extend(v)
     all_day_names_full = list(day_names_sk_full.values())
-
+ 
     for line in lines:
         line_lower = line.lower()
-
+ 
         # Začíname zachytávať pri dnešnom dni
         if not capturing:
             # Hľadáme riadok s dnešným dňom a dátumom
@@ -711,7 +715,7 @@ def scrape_stage_ntc() -> Optional[str]:
                 if any(d in line_lower for d in today_day_names) or any(dp in line for dp in today_date_patterns):
                     capturing = True
                     continue
-
+ 
         # Skončíme pri ďalšom dni
         if capturing:
             is_next_day = False
@@ -723,14 +727,14 @@ def scrape_stage_ntc() -> Optional[str]:
                         break
             if is_next_day:
                 break
-
+ 
             # Preskočíme irelevantné riadky
             skip_keywords = ["nenašli ste", "registrov", "zaregistrov", "menucka",
                              "jedálny lístok", "jedálne lístky", "parametre",
                              "reklam", "cookie", "appstore", "google play"]
             if any(kw in line_lower for kw in skip_keywords):
                 continue
-
+ 
             # Zastavíme pri konci menu sekcie na menucka.sk
             stop_keywords = ["tlačiť menu", "zoznam alergénov", "zobraziť väčšiu",
                              "popis reštaurácie", "reštaurácia stage",
@@ -741,85 +745,104 @@ def scrape_stage_ntc() -> Optional[str]:
                              "tipy vo vašom"]
             if any(kw in line_lower for kw in stop_keywords):
                 break
-
+ 
             if len(line) > 2:
                 captured.append(line)
-
+ 
     if not captured:
         log.warning("Stage NTC – dnešné menu sa nenašlo")
         return None
-
+ 
     return format_stage_ntc(clean("\n".join(captured)))
-
-
+ 
+ 
 # ===========================================================================
 # 5) CLOUD RESTAURANT (DoubleTree by Hilton Bratislava)
 # ===========================================================================
-
+ 
 def scrape_cloud_restaurant() -> Optional[str]:
     """
     Cloud Restaurant @ DoubleTree by Hilton Bratislava.
-
+ 
     OD LETA 2026 má reštaurácia vlastnú stránku cloudrestaurant.sk – stará
     adresa doubletree-bratislava.sk/cloud-restaurant/ už len presmerúva sem.
-    Obedové menu zároveň prestalo byť priamo v HTML stránky (staré "polievka
-    podľa ponuky" / "soup of the day" markery tam už nie sú) a je linkované
-    ako PDF pod nadpisom "Týždenné menu" (súbor obsahuje "obedov" v názve,
-    napr. Obedove-menu-jun-1.pdf). Menu je rovnaké pondelok–piatok, takže
-    netreba filtrovať podľa dňa – stačí vytiahnuť všetkých 6 jedál.
-
+ 
+    DÔLEŽITÉ (zistené 21.9.2026 cez debug výpis priamo z GitHub Actions):
+    odkaz na "Týždenné menu" si stránka dopĺňa do DOM až cez JavaScript po
+    natiahnutí – obyčajný requests.get() (bez prehliadača / bez JS) v HTML
+    vidí len 2 statické .pdf odkazy ("Raňajkové menu" a "Ochrana osobných
+    údajov"), nikdy nie ten týždenný. Preto celé predchádzajúce hľadanie
+    <a href> odkazov na hlavnej stránke bolo od základu zlé – fungovalo len
+    v nástroji, ktorý si stránku vie vyrenderovať s JS (a tak sa to omylom
+    javilo ako "funkčné" pri manuálnom overovaní).
+ 
+    Namiesto scrapovania HTML preto čítame WordPress REST API
+    (/wp-json/wp/v2/media), ktoré WordPress vždy vráti ako čisté JSON dáta
+    bez JS. Reštaurácia nahráva týždenné menu vždy s názvom = dátumový
+    rozsah (napr. "21.-25.9.2026", "14.-17.9.2026", "31.8.-4.9.2026") a nič
+    iné v knižnici médií (Sezónne/Hlavné/Raňajkové/Nápojové/Vínne menu) taký
+    "len čísla, bodky a pomlčky" názov nemá – podľa toho ho spoľahlivo
+    rozoznáme a zoberieme najnovší.
+ 
+    Menu je rovnaké pondelok–piatok, takže netreba filtrovať podľa dňa –
+    stačí vytiahnuť všetkých 6 jedál.
+ 
     Formát PDF (3 riadky na jedlo):
       1) SK názov + gramáž, napr. "Grilovaný losos... 150 g"
          (od 21.9.2026 bez zátvoriek okolo gramáže – predtým "(150 g)")
       2) EN názov + alergény, napr. "Grilled salmon... (7,12)"
       3) cena, napr. "12.90 Eur" alebo "12,90 Eur" (formát kolíše)
     """
-    page_url = "https://cloudrestaurant.sk/"
-    log.info("Scrapujem Cloud Restaurant: %s", page_url)
-
+    api_url = (
+        "https://cloudrestaurant.sk/wp-json/wp/v2/media"
+        "?media_type=application&per_page=20&orderby=date&order=desc"
+    )
+    log.info("Scrapujem Cloud Restaurant (WP REST API): %s", api_url)
+ 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
-
+ 
     try:
-        resp = requests.get(page_url, timeout=15, headers=headers)
+        resp = requests.get(api_url, timeout=15, headers=headers)
         resp.raise_for_status()
-    except requests.RequestException as e:
-        log.error("Cloud Restaurant – chyba pri sťahovaní stránky: %s", e)
-        return None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Hľadáme link na PDF s obedovým/týždenným menu (nie sezónne, hlavné,
-    # nápojové alebo vínne menu – tie majú iné slová v názve súboru)
+        media_items = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        log.error("Cloud Restaurant – chyba pri čítaní WP REST API: %s", e)
+        return f"⚠️ _DEBUG – chyba pri čítaní {api_url}: {e}_"
+ 
+    # Názov je "dátumový" ak obsahuje len číslice, bodky a pomlčky
+    # (žiadne písmená) – presne tak reštaurácia pomenúva týždenné PDF.
+    date_only_re = re.compile(r'^[\d.\-]+$')
     pdf_url = None
-    for a_tag in soup.find_all("a", href=True):
-        href = a_tag["href"]
-        href_lower = href.lower()
-        if ".pdf" not in href_lower:
-            continue
-        link_text = a_tag.get_text(" ", strip=True).lower()
-        if "týžd" in link_text or "tyzd" in link_text or "obedov" in link_text:
-            pdf_url = href
+    for item in media_items:
+        title = ((item.get("title") or {}).get("rendered") or "").strip()
+        mime = item.get("mime_type", "")
+        if mime == "application/pdf" and title and date_only_re.match(title):
+            pdf_url = item.get("source_url")
             break
-        if "obedov" in href_lower:
-            pdf_url = href
-            break
-
+ 
     if not pdf_url:
-        log.warning("Cloud Restaurant – nenašiel sa link na PDF obedového menu")
-        return None
-
-    log.info("Cloud Restaurant – PDF URL: %s", pdf_url)
-
+        log.warning("Cloud Restaurant – v REST API sa nenašlo týždenné menu")
+        titles_dump = "\n".join(
+            f"{((i.get('title') or {}).get('rendered') or '')!r} ({i.get('mime_type','')})"
+            for i in media_items
+        ) or "(žiadne položky v knižnici médií)"
+        return (
+            f"⚠️ _DEBUG – v media knižnici sa nenašlo PDF s dátumovým názvom:_\n"
+            f"```\n{titles_dump}\n```"
+        )
+ 
+    log.info("Cloud Restaurant – PDF URL (REST API): %s", pdf_url)
+ 
     try:
         pdf_resp = requests.get(pdf_url, timeout=15, headers=headers)
         pdf_resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Cloud Restaurant – chyba pri sťahovaní PDF: %s", e)
-        return None
-
+        return f"⚠️ _DEBUG – nepodarilo sa stiahnuť PDF {pdf_url}: {e}_"
+ 
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -827,8 +850,8 @@ def scrape_cloud_restaurant() -> Optional[str]:
             from PyPDF2 import PdfReader
         except ImportError:
             log.error("Cloud Restaurant – chýba pypdf alebo PyPDF2 knižnica")
-            return None
-
+            return "⚠️ _DEBUG – chýba pypdf/PyPDF2 knižnica v prostredí_"
+ 
     reader = PdfReader(BytesIO(pdf_resp.content))
     full_text = ""
     for page in reader.pages:
@@ -838,19 +861,23 @@ def scrape_cloud_restaurant() -> Optional[str]:
         # dvoch riadkoch a weight_re nikdy nič nenájde. "layout" mód berie
         # skutočnú pozíciu textu, takže riadky ostanú pohromade.
         full_text += page.extract_text(extraction_mode="layout") + "\n"
-
+ 
     if not full_text.strip():
         log.warning("Cloud Restaurant – PDF je prázdny alebo nečitateľný")
-        return None
-
+        return (
+            f"⚠️ _DEBUG – PDF stiahnuté ({len(pdf_resp.content)} bajtov, "
+            f"pdf_url={pdf_url}), ale extract_text() vrátil prázdny text. "
+            f"Počet strán={len(reader.pages)}_"
+        )
+ 
     lines = [l.strip() for l in full_text.splitlines() if l.strip()]
-
+ 
     # Gramáž bola donedávna v zátvorkách "(150 g)", od 21.9.2026 je bez nich
     # ("150 g") – zátvorky robíme nepovinné, aby fungovalo oboje.
     weight_re = re.compile(r'\b\d+\s*g\b', re.IGNORECASE)
     # Cena môže byť "12,90 Eur", "10.90 Eur" alebo "12,90€" – formát v PDF kolíše
     price_re = re.compile(r'\d+[.,]\d+\s*(?:€|eur)', re.IGNORECASE)
-
+ 
     output_lines = []
     used_indices = set()
     for i, line in enumerate(lines):
@@ -872,7 +899,7 @@ def scrape_cloud_restaurant() -> Optional[str]:
                 output_lines.append(f"• {line} — *{price}*")
             else:
                 output_lines.append(f"• {line}")
-
+ 
     if not output_lines:
         log.warning("Cloud Restaurant – nepodarilo sa extrahovať jedlá z PDF")
         # --- DOČASNÝ DEBUG (odstrániť po diagnostike) ---------------------
@@ -886,20 +913,20 @@ def scrape_cloud_restaurant() -> Optional[str]:
             f"počet riadkov={len(lines)}_\n```\n{debug_lines}\n```"
         )
         # --------------------------------------------------------------
-
+ 
     return "_Polievka dňa v cene menu_\n" + "\n".join(output_lines)
-
-
+ 
+ 
 # ===========================================================================
 # Slack odoslanie
 # ===========================================================================
-
+ 
 def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
     """Vytvorí Slack Block Kit správu z výsledkov scrapingu."""
     today = date.today()
     day_names_sk = ["Pondelok", "Utorok", "Streda", "Štvrtok", "Piatok", "Sobota", "Nedeľa"]
     day_name = day_names_sk[today.weekday()]
-
+ 
     blocks = [
         {
             "type": "header",
@@ -911,7 +938,7 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
         },
         {"type": "divider"},
     ]
-
+ 
     restaurant_emojis = {
         "Tower Events (Cantína)": "🏢",
         "The Blue Champs": "🔵",
@@ -919,7 +946,7 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
         "Stage (NTC)": "🎾",
         "Cloud Restaurant": "☁️",
     }
-
+ 
     restaurant_urls = {
         "Tower Events (Cantína)": "https://towerevents.sk/menu/",
         "The Blue Champs": "https://www.thebluechamps.sk/denne-menu/",
@@ -927,11 +954,11 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
         "Stage (NTC)": "https://restauraciastage.sk/",
         "Cloud Restaurant": "https://cloudrestaurant.sk/",
     }
-
+ 
     for name, menu_text in menus.items():
         emoji = restaurant_emojis.get(name, "🍴")
         url = restaurant_urls.get(name, "")
-
+ 
         blocks.append(
             {
                 "type": "section",
@@ -941,7 +968,7 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
                 },
             }
         )
-
+ 
         if menu_text:
             # Slack má limit 3000 znakov na sekciu
             text = menu_text[:2900]
@@ -964,22 +991,22 @@ def format_slack_message(menus: dict[str, Optional[str]]) -> dict:
                     },
                 }
             )
-
+ 
         blocks.append({"type": "divider"})
-
+ 
     # Fallback text pre notifikácie
     fallback = f"Obedové menu – {day_name} {today.day}.{today.month}.{today.year}"
-
+ 
     return {"text": fallback, "blocks": blocks}
-
-
+ 
+ 
 def send_to_slack(payload: dict) -> bool:
     """Odošle správu do Slack cez Incoming Webhook."""
     if not SLACK_WEBHOOK_URL:
         log.error("SLACK_WEBHOOK_URL nie je nastavená!")
         log.info("Nastavte: export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'")
         return False
-
+ 
     try:
         resp = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
         if resp.status_code == 200 and resp.text == "ok":
@@ -991,20 +1018,20 @@ def send_to_slack(payload: dict) -> bool:
     except requests.RequestException as e:
         log.error("Chyba pri odosielaní do Slacku: %s", e)
         return False
-
-
+ 
+ 
 # ===========================================================================
 # Main
 # ===========================================================================
-
+ 
 def main():
     # Víkendy preskočíme
     if TODAY_INDEX > 4:
         log.info("Dnes je víkend – preskakujem.")
         sys.exit(0)
-
+ 
     log.info("Spúšťam scraping menu na %s", today_date_str())
-
+ 
     menus = {
         "Tower Events (Cantína)": scrape_tower_events(),
         "The Blue Champs": scrape_blue_champs(),
@@ -1012,7 +1039,7 @@ def main():
         "Stage (NTC)": scrape_stage_ntc(),
         "Cloud Restaurant": scrape_cloud_restaurant(),
     }
-
+ 
     # Pridáme odhad kalórií
     if CALORIENINJAS_API_KEY:
         log.info("Pridávam odhad kalórií (CalorieNinjas)...")
@@ -1021,7 +1048,7 @@ def main():
                 menus[name] = add_calories_to_menu(menus[name])
     else:
         log.info("CALORIENINJAS_API_KEY nie je nastavená – kalórie sa nebudú pridávať")
-
+ 
     # Výpis do konzoly (pre debug)
     for name, text in menus.items():
         print(f"\n{'='*50}")
@@ -1031,11 +1058,16 @@ def main():
             print(text)
         else:
             print("(nepodarilo sa načítať)")
-
+ 
     # Odoslanie do Slacku
     payload = format_slack_message(menus)
-
-    if SLACK_WEBHOOK_URL:
+ 
+    if DRY_RUN:
+        print("\n🧪 DRY_RUN je zapnutý – správa sa NEPOSLALA do Slacku (do žiadneho kanála).")
+        print("   Toto je len náhľad presne toho, čo by sa bolo odoslalo:")
+        import json
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif SLACK_WEBHOOK_URL:
         send_to_slack(payload)
     else:
         print("\n⚠️  SLACK_WEBHOOK_URL nie je nastavená – správa nebola odoslaná.")
@@ -1043,7 +1075,7 @@ def main():
         print("\n📋 Náhľad Slack payload (JSON):")
         import json
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
