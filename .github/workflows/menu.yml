@@ -1,27 +1,36 @@
 name: Obedové menu do Slacku
-
+ 
 on:
   schedule:
     - cron: '0 3 * * 1-5'
   workflow_dispatch:
-
+    inputs:
+      dry_run:
+        description: >-
+          Testovací beh bez odoslania do Slacku (výsledok len v logu tohto behu).
+        required: false
+        type: boolean
+        default: false
+ 
 jobs:
   send-menu:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout kódu
         uses: actions/checkout@v4
-
+ 
       - name: Inštalácia Pythonu
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+ 
       - name: Inštalácia závislostí
         run: pip install -r requirements.txt
-
+ 
       - name: Spustenie scrapera
         run: python menu_scraper.py
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           CALORIENINJAS_API_KEY: ${{ secrets.CALORIENINJAS_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
+ 
