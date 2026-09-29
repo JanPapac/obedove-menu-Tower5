@@ -2,7 +2,13 @@ name: Obedové menu do Slacku
  
 on:
   schedule:
-    - cron: '0 3 * * 1-5'
+    # 1:47 UTC = cca 3:47 (letný čas) / 2:47 (zimný čas) SEČ/SELČ.
+    # Zámerne skoro ráno a na "nekrúhlu" minútu, nie presne na celú
+    # hodinu – GitHub Actions naplánované behy negarantuje na presný
+    # čas a práve behy na celú hodinu (napr. "0 3 * * *") sa pri
+    # vyššom zaťažení oneskorujú najviac. Táto rezerva (cca 6–8 hodín
+    # do 10:30) má vystačiť aj keby sa beh oneskoril podobne ako dnes.
+    - cron: '47 1 * * 1-5'
   workflow_dispatch:
     inputs:
       dry_run:
